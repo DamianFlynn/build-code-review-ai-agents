@@ -1,0 +1,104 @@
+name: Build Code Review AI Agents Part 3
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "outputs/**"
+      - "recommit/**"
+  pull_request:
+    types: [opened, synchronize]
+    paths-ignore:
+      - "outputs/**"
+      - "recommit/**"
+
+jobs:
+  ai-code-review:
+    runs-on: ubuntu-latest
+    environment: development
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      pr_number: ${{ steps.create-pr.outputs.pr_number }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python environment
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.13.0"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install openai icecream tiktoken
+      - name: Create necessary directories and example main.tf
+        run: |
+          mkdir -p outputs recommit
+      - name: Run AI Review Agents
+        if: github.event_name == 'push'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python build_code_review_ai_agents.py
+      - name: Configure Git
+        if: github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Create and Switch to New Branch
+        if: github.event_name == 'push'
+        run: |
+          git checkout -b ai-generated-changes-pr
+          git add -f recommit/main.tf outputs/review_report.md outputs/tokenforecasts.log
+          git commit -m "Automated code review changes"
+          git push -f origin ai-generated-changes-pr
+      - name: Create Pull Request
+        if: github.event_name == 'push'
+        id: create-pr
+        uses: repo-sync/pull-request@v2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          source_branch: "ai-generated-changes-pr"
+          destination_branch: "main"
+          pr_title: "Automated Code Review Changes"
+          pr_body: "TALKITDOIT. This PR includes automated code review changes, including inline comments and a review report."
+          pr_label: "talkitdoit-automated-code-review-pr"
+
+      - name: Set PR number and debug
+        if: |
+          github.event_name == 'pull_request' ||
+          (github.event_name == 'push' && steps.create-pr.outputs.pr_number != '')
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
+          else
+            echo "PR_NUMBER=${{ steps.create-pr.outputs.pr_number }}" >> $GITHUB_ENV
+          fi
+          echo "Event name: ${{ github.event_name }}"
+          echo "PR number set to: $PR_NUMBER"
+
+      - name: Process PR Review
+        if: |
+          github.event_name == 'pull_request' ||
+          (github.event_name == 'push' && steps.create-pr.outputs.pr_number != '')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          echo "Debug: Current PR_NUMBER is: $PR_NUMBER"
+          python .github/scripts/process_pr_review.py
+
+      - name: Deploy to GitHub Pages
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && success() }}
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: outputs
+          publish_branch: gh-pages
+          keep_files: true
